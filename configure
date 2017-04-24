@@ -6835,7 +6835,7 @@ then
             # double/ULong[2] union using clang 4.0 and optimization level
             # -O2 or higher
             # https://bugs.llvm.org//show_bug.cgi?id=31928
-            ALIASING="-fno-strict-aliasing"
+            ALIASING=""
         fi
 
 	case $ac_cv_prog_cc_g in

@@ -176,16 +176,45 @@ static double private_mem[PRIVATE_mem], *pmem_next = private_mem;
 extern "C" {
 #endif
 
-typedef union { double d; ULong L[2]; } U;
+typedef union { double HIDE_d; ULong HIDE_L[2]; } U;
 
-#ifdef IEEE_8087
-#define word0(x) (x)->L[1]
-#define word1(x) (x)->L[0]
-#else
-#define word0(x) (x)->L[0]
-#define word1(x) (x)->L[1]
+#ifndef ALIASING_SAFE
+# ifdef __clang__
+#  define ALIASING_SAFE 1
+# else
+#  define ALIASING_SAFE 0
+# endif
 #endif
-#define dval(x) (x)->d
+
+#if ALIASING_SAFE
+# ifdef IEEE_8087
+static inline ULong get_word0(U *x) { ULong l; memcpy(&l, &x->HIDE_L[1], sizeof(ULong)); return l; }
+static inline ULong get_word1(U *x) { ULong l; memcpy(&l, &x->HIDE_L[0], sizeof(ULong)); return l; }
+static inline void set_word0(U *x, ULong l) { memcpy(&x->HIDE_L[1], &l, sizeof(ULong)); }
+static inline void set_word1(U *x, ULong l) { memcpy(&x->HIDE_L[0], &l, sizeof(ULong)); }
+# else /* IEEE_8087 */
+static inline ULong get_word0(U *x) { ULong l; memcpy(&l, &x->HIDE_L[0], sizeof(ULong)); return l; }
+static inline ULong get_word1(U *x) { ULong l; memcpy(&l, &x->HIDE_L[1], sizeof(ULong)); return l; }
+static inline void set_word0(U *x, ULong l) { memcpy(&x->HIDE_L[0], &l, sizeof(ULong)); }
+static inline void set_word1(U *x, ULong l) { memcpy(&x->HIDE_L[1], &l, sizeof(ULong)); }
+# endif /* IEEE_8087 */
+static inline double get_dval(U *x) { double d; memcpy(&d, &x->HIDE_d, sizeof(double)); return d; }
+static inline double set_dval(U *x, double d) { memcpy(&x->HIDE_d, &d, sizeof(double)); return d; }
+#else /* ALIASING_SAFE */
+# ifdef IEEE_8087
+#define get_word0(x) (x)->HIDE_L[1]
+#define get_word1(x) (x)->HIDE_L[0]
+#define set_word0(x, l) ((x)->HIDE_L[1] = (l))
+#define set_word1(x, l) ((x)->HIDE_L[0] = (l))
+# else /* IEEE_8087 */
+#define get_word0(x) (x)->HIDE_L[0]
+#define get_word1(x) (x)->HIDE_L[1]
+#define set_word0(x, l) ((x)->HIDE_L[0] = (l))
+#define set_word1(x, l) ((x)->HIDE_L[1] = (l))
+# endif /* IEEE_8087 */
+#define get_dval(x) (x)->HIDE_d
+#define set_dval(x, e) ((x)->HIDE_d = (e))
+#endif /* ALIASING_SAFE */
 
 #ifndef STRTOD_DIGLIM
 #define STRTOD_DIGLIM 40
@@ -931,10 +960,10 @@ ulp(U *x)
     Long L;
     U u;
 
-    L = (word0(x) & Exp_mask) - (P-1)*Exp_msk1;
-    word0(&u) = L;
-    word1(&u) = 0;
-    return dval(&u);
+    L = (get_word0(x) & Exp_mask) - (P-1)*Exp_msk1;
+    set_word0(&u, L);
+    set_word1(&u, 0);
+    return get_dval(&u);
 }
 
 /* Convert a Bigint to a double plus an exponent */
@@ -955,23 +984,23 @@ b2d(Bigint *a, int *e)
     k = hi0bits(y);
     *e = 32 - k;
     if (k < Ebits) {
-        word0(&d) = Exp_1 | y >> (Ebits - k);
+        set_word0(&d, Exp_1 | y >> (Ebits - k));
         w = xa > xa0 ? *--xa : 0;
-        word1(&d) = y << ((32-Ebits) + k) | w >> (Ebits - k);
+        set_word1(&d, y << ((32-Ebits) + k) | w >> (Ebits - k));
         goto ret_d;
     }
     z = xa > xa0 ? *--xa : 0;
     if (k -= Ebits) {
-        word0(&d) = Exp_1 | y << k | z >> (32 - k);
+        set_word0(&d, Exp_1 | y << k | z >> (32 - k));
         y = xa > xa0 ? *--xa : 0;
-        word1(&d) = z << k | y >> (32 - k);
+        set_word1(&d, z << k | y >> (32 - k));
     }
     else {
-        word0(&d) = Exp_1 | y;
-        word1(&d) = z;
+        set_word0(&d, Exp_1 | y);
+        set_word1(&d, z);
     }
   ret_d:
-    return dval(&d);
+    return get_dval(&d);
 }
 
 /* Convert a scaled double to a Bigint plus an exponent.  Similar to d2b,
@@ -1006,9 +1035,9 @@ sd2b(U *d, int scale, int *e)
 
     /* First construct b and e assuming that scale == 0. */
     b->wds = 2;
-    b->x[0] = word1(d);
-    b->x[1] = word0(d) & Frac_mask;
-    *e = Etiny - 1 + (int)((word0(d) & Exp_mask) >> Exp_shift);
+    b->x[0] = get_word1(d);
+    b->x[1] = get_word0(d) & Frac_mask;
+    *e = Etiny - 1 + (int)((get_word0(d) & Exp_mask) >> Exp_shift);
     if (*e < Etiny)
         *e = Etiny;
     else
@@ -1066,11 +1095,11 @@ d2b(U *d, int *e, int *bits)
         return NULL;
     x = b->x;
 
-    z = word0(d) & Frac_mask;
-    word0(d) &= 0x7fffffff;   /* clear sign bit, which we ignore */
-    if ((de = (int)(word0(d) >> Exp_shift)))
+    z = get_word0(d) & Frac_mask;
+    set_word0(d, get_word0(d) & 0x7fffffff);   /* clear sign bit, which we ignore */
+    if ((de = (int)(get_word0(d) >> Exp_shift)))
         z |= Exp_msk1;
-    if ((y = word1(d))) {
+    if ((y = get_word1(d))) {
         if ((k = lo0bits(&y))) {
             x[0] = y | z << (32 - k);
             z >>= k;
@@ -1107,16 +1136,16 @@ ratio(Bigint *a, Bigint *b)
     U da, db;
     int k, ka, kb;
 
-    dval(&da) = b2d(a, &ka);
-    dval(&db) = b2d(b, &kb);
+    set_dval(&da, b2d(a, &ka));
+    set_dval(&db, b2d(b, &kb));
     k = ka - kb + 32*(a->wds - b->wds);
     if (k > 0)
-        word0(&da) += k*Exp_msk1;
+        set_word0(&da, get_word0(&da) + k*Exp_msk1);
     else {
         k = -k;
-        word0(&db) += k*Exp_msk1;
+        set_word0(&db, get_word0(&db) + k*Exp_msk1);
     }
-    return dval(&da) / dval(&db);
+    return get_dval(&da) / get_dval(&db);
 }
 
 static const double
@@ -1232,11 +1261,11 @@ sulp(U *x, BCinfo *bc)
 {
     U u;
 
-    if (bc->scale && 2*P + 1 > (int)((word0(x) & Exp_mask) >> Exp_shift)) {
+    if (bc->scale && 2*P + 1 > (int)((get_word0(x) & Exp_mask) >> Exp_shift)) {
         /* rv/2^bc->scale is subnormal */
-        word0(&u) = (P+2)*Exp_msk1;
-        word1(&u) = 0;
-        return u.d;
+        set_word0(&u, (P+2)*Exp_msk1);
+        set_word1(&u, 0);
+        return get_dval(&u);
     }
     else {
         assert(word0(x) || word1(x)); /* x != 0.0 */
@@ -1396,7 +1425,7 @@ bigcomp(U *rv, const char *s0, BCinfo *bc)
     Bfree(b);
     Bfree(d);
     if (dd > 0 || (dd == 0 && odd))
-        dval(rv) += sulp(rv, bc);
+        set_dval(rv, get_dval(rv) + sulp(rv, bc));
     return 0;
 }
 
@@ -1411,11 +1440,11 @@ double
 _Py_dg_stdnan(int sign)
 {
     U rv;
-    word0(&rv) = NAN_WORD0;
-    word1(&rv) = NAN_WORD1;
+    set_word0(&rv, NAN_WORD0);
+    set_word1(&rv, NAN_WORD1);
     if (sign)
-        word0(&rv) |= Sign_bit;
-    return dval(&rv);
+        set_word0(&rv, get_word0(&rv) | Sign_bit);
+    return get_dval(&rv);
 }
 
 /* Return positive or negative infinity, according to the given sign (0 for
@@ -1425,9 +1454,9 @@ double
 _Py_dg_infinity(int sign)
 {
     U rv;
-    word0(&rv) = POSINF_WORD0;
-    word1(&rv) = POSINF_WORD1;
-    return sign ? -dval(&rv) : dval(&rv);
+    set_word0(&rv, POSINF_WORD0);
+    set_word1(&rv, POSINF_WORD1);
+    return sign ? -get_dval(&rv) : get_dval(&rv);
 }
 
 double
@@ -1436,15 +1465,15 @@ _Py_dg_strtod(const char *s00, char **se)
     int bb2, bb5, bbe, bd2, bd5, bs2, c, dsign, e, e1, error;
     int esign, i, j, k, lz, nd, nd0, odd, sign;
     const char *s, *s0, *s1;
-    double aadj, aadj1;
-    U aadj2, adj, rv, rv0;
+    double aadj, aadj1, adj;
+    U aadj2, rv, rv0;
     ULong y, z, abs_exp;
     Long L;
     BCinfo bc;
     Bigint *bb, *bb1, *bd, *bd0, *bs, *delta;
     size_t ndigits, fraclen;
 
-    dval(&rv) = 0.;
+    set_dval(&rv, 0.);
 
     /* Start parsing. */
     c = *(s = s00);
@@ -1630,9 +1659,9 @@ _Py_dg_strtod(const char *s00, char **se)
     }
 
     k = nd < DBL_DIG + 1 ? nd : DBL_DIG + 1;
-    dval(&rv) = y;
+    set_dval(&rv, y);
     if (k > 9) {
-        dval(&rv) = tens[k - 9] * dval(&rv) + z;
+        set_dval(&rv, tens[k - 9] * get_dval(&rv) + z);
     }
     bd0 = 0;
     if (nd <= DBL_DIG
@@ -1642,7 +1671,7 @@ _Py_dg_strtod(const char *s00, char **se)
             goto ret;
         if (e > 0) {
             if (e <= Ten_pmax) {
-                dval(&rv) *= tens[e];
+                set_dval(&rv, get_dval(&rv) * tens[e]);
                 goto ret;
             }
             i = DBL_DIG - nd;
@@ -1651,13 +1680,13 @@ _Py_dg_strtod(const char *s00, char **se)
                  * this for larger i values.
                  */
                 e -= i;
-                dval(&rv) *= tens[i];
-                dval(&rv) *= tens[e];
+                set_dval(&rv, get_dval(&rv) * tens[i]);
+                set_dval(&rv, get_dval(&rv) * tens[e]);
                 goto ret;
             }
         }
         else if (e >= -Ten_pmax) {
-            dval(&rv) /= tens[-e];
+            set_dval(&rv, get_dval(&rv) / tens[-e]);
             goto ret;
         }
     }
@@ -1669,28 +1698,28 @@ _Py_dg_strtod(const char *s00, char **se)
 
     if (e1 > 0) {
         if ((i = e1 & 15))
-            dval(&rv) *= tens[i];
+            set_dval(&rv, get_dval(&rv) * tens[i]);
         if (e1 &= ~15) {
             if (e1 > DBL_MAX_10_EXP)
                 goto ovfl;
             e1 >>= 4;
             for(j = 0; e1 > 1; j++, e1 >>= 1)
                 if (e1 & 1)
-                    dval(&rv) *= bigtens[j];
+                    set_dval(&rv, get_dval(&rv) * bigtens[j]);
             /* The last multiplication could overflow. */
-            word0(&rv) -= P*Exp_msk1;
-            dval(&rv) *= bigtens[j];
-            if ((z = word0(&rv) & Exp_mask)
+            set_word0(&rv, get_word0(&rv) - P*Exp_msk1);
+            set_dval(&rv, get_dval(&rv) * bigtens[j]);
+            if ((z = get_word0(&rv) & Exp_mask)
                 > Exp_msk1*(DBL_MAX_EXP+Bias-P))
                 goto ovfl;
             if (z > Exp_msk1*(DBL_MAX_EXP+Bias-1-P)) {
                 /* set to largest number */
                 /* (Can't trust DBL_MAX) */
-                word0(&rv) = Big0;
-                word1(&rv) = Big1;
+                set_word0(&rv, Big0);
+                set_word1(&rv, Big1);
             }
             else
-                word0(&rv) += P*Exp_msk1;
+                set_word0(&rv, get_word0(&rv) + P*Exp_msk1);
         }
     }
     else if (e1 < 0) {
@@ -1706,7 +1735,7 @@ _Py_dg_strtod(const char *s00, char **se)
 
         e1 = -e1;
         if ((i = e1 & 15))
-            dval(&rv) /= tens[i];
+            set_dval(&rv, get_dval(&rv) / tens[i]);
         if (e1 >>= 4) {
             if (e1 >= 1 << n_bigtens)
                 goto undfl;
@@ -1714,21 +1743,21 @@ _Py_dg_strtod(const char *s00, char **se)
                 bc.scale = 2*P;
             for(j = 0; e1 > 0; j++, e1 >>= 1)
                 if (e1 & 1)
-                    dval(&rv) *= tinytens[j];
-            if (bc.scale && (j = 2*P + 1 - ((word0(&rv) & Exp_mask)
+                    set_dval(&rv, get_dval(&rv) * tinytens[j]);
+            if (bc.scale && (j = 2*P + 1 - ((get_word0(&rv) & Exp_mask)
                                             >> Exp_shift)) > 0) {
                 /* scaled rv is denormal; clear j low bits */
                 if (j >= 32) {
-                    word1(&rv) = 0;
+                    set_word1(&rv, 0);
                     if (j >= 53)
-                        word0(&rv) = (P+2)*Exp_msk1;
+                        set_word0(&rv, (P+2)*Exp_msk1);
                     else
-                        word0(&rv) &= 0xffffffff << (j-32);
+                        set_word0(&rv, get_word0(&rv) & (0xffffffff << (j-32)));
                 }
                 else
-                    word1(&rv) &= 0xffffffff << j;
+                    set_word1(&rv, get_word1(&rv) & (0xffffffff << j));
             }
-            if (!dval(&rv))
+            if (!get_dval(&rv))
                 goto undfl;
         }
     }
@@ -1956,14 +1985,14 @@ _Py_dg_strtod(const char *s00, char **se)
                next double, so the correctly rounded result is either rv - 0.5
                ulp(rv) or rv; in this case, use bigcomp to distinguish. */
 
-            if (!word1(&rv) && !(word0(&rv) & Bndry_mask)) {
+            if (!get_word1(&rv) && !(get_word0(&rv) & Bndry_mask)) {
                 /* rv can't be 0, since it's an overestimate for some
                    nonzero value.  So rv is a normal power of 2. */
-                j = (int)(word0(&rv) & Exp_mask) >> Exp_shift;
+                j = (int)(get_word0(&rv) & Exp_mask) >> Exp_shift;
                 /* rv / 2^bc.scale = 2^(j - 1023 - bc.scale); use bigcomp if
                    rv / 2^bc.scale >= 2^-1021. */
                 if (j - bc.scale >= 2) {
-                    dval(&rv) -= 0.5 * sulp(&rv, &bc);
+                    set_dval(&rv, get_dval(&rv) - 0.5 * sulp(&rv, &bc));
                     break; /* Use bigcomp. */
                 }
             }
@@ -1978,8 +2007,8 @@ _Py_dg_strtod(const char *s00, char **se)
             /* Error is less than half an ulp -- check for
              * special case of mantissa a power of two.
              */
-            if (dsign || word1(&rv) || word0(&rv) & Bndry_mask
-                || (word0(&rv) & Exp_mask) <= (2*P+1)*Exp_msk1
+            if (dsign || get_word1(&rv) || get_word0(&rv) & Bndry_mask
+                || (get_word0(&rv) & Exp_mask) <= (2*P+1)*Exp_msk1
                 ) {
                 break;
             }
@@ -2002,26 +2031,26 @@ _Py_dg_strtod(const char *s00, char **se)
         if (i == 0) {
             /* exactly half-way between */
             if (dsign) {
-                if ((word0(&rv) & Bndry_mask1) == Bndry_mask1
-                    &&  word1(&rv) == (
+                if ((get_word0(&rv) & Bndry_mask1) == Bndry_mask1
+                    &&  get_word1(&rv) == (
                         (bc.scale &&
-                         (y = word0(&rv) & Exp_mask) <= 2*P*Exp_msk1) ?
+                         (y = get_word0(&rv) & Exp_mask) <= 2*P*Exp_msk1) ?
                         (0xffffffff & (0xffffffff << (2*P+1-(y>>Exp_shift)))) :
                         0xffffffff)) {
                     /*boundary case -- increment exponent*/
-                    word0(&rv) = (word0(&rv) & Exp_mask)
+                    set_word0(&rv, (get_word0(&rv) & Exp_mask)
                         + Exp_msk1
-                        ;
-                    word1(&rv) = 0;
+                        );
+                    set_word1(&rv, 0);
                     /* dsign = 0; */
                     break;
                 }
             }
-            else if (!(word0(&rv) & Bndry_mask) && !word1(&rv)) {
+            else if (!(get_word0(&rv) & Bndry_mask) && !get_word1(&rv)) {
               drop_down:
                 /* boundary case -- decrement exponent */
                 if (bc.scale) {
-                    L = word0(&rv) & Exp_mask;
+                    L = get_word0(&rv) & Exp_mask;
                     if (L <= (2*P+1)*Exp_msk1) {
                         if (L > (P+2)*Exp_msk1)
                             /* round even ==> */
@@ -2033,18 +2062,18 @@ _Py_dg_strtod(const char *s00, char **se)
                         goto undfl;
                     }
                 }
-                L = (word0(&rv) & Exp_mask) - Exp_msk1;
-                word0(&rv) = L | Bndry_mask1;
-                word1(&rv) = 0xffffffff;
+                L = (get_word0(&rv) & Exp_mask) - Exp_msk1;
+                set_word0(&rv, L | Bndry_mask1);
+                set_word1(&rv, 0xffffffff);
                 break;
             }
             if (!odd)
                 break;
             if (dsign)
-                dval(&rv) += sulp(&rv, &bc);
+                set_dval(&rv, get_dval(&rv) + sulp(&rv, &bc));
             else {
-                dval(&rv) -= sulp(&rv, &bc);
-                if (!dval(&rv)) {
+                set_dval(&rv, get_dval(&rv) - sulp(&rv, &bc));
+                if (!get_dval(&rv)) {
                     if (bc.nd >nd)
                         break;
                     goto undfl;
@@ -2056,8 +2085,8 @@ _Py_dg_strtod(const char *s00, char **se)
         if ((aadj = ratio(delta, bs)) <= 2.) {
             if (dsign)
                 aadj = aadj1 = 1.;
-            else if (word1(&rv) || word0(&rv) & Bndry_mask) {
-                if (word1(&rv) == Tiny1 && !word0(&rv)) {
+            else if (get_word1(&rv) || get_word0(&rv) & Bndry_mask) {
+                if (get_word1(&rv) == Tiny1 && !get_word0(&rv)) {
                     if (bc.nd >nd)
                         break;
                     goto undfl;
@@ -2082,18 +2111,18 @@ _Py_dg_strtod(const char *s00, char **se)
             if (Flt_Rounds == 0)
                 aadj1 += 0.5;
         }
-        y = word0(&rv) & Exp_mask;
+        y = get_word0(&rv) & Exp_mask;
 
         /* Check for overflow */
 
         if (y == Exp_msk1*(DBL_MAX_EXP+Bias-1)) {
-            dval(&rv0) = dval(&rv);
-            word0(&rv) -= P*Exp_msk1;
-            adj.d = aadj1 * ulp(&rv);
-            dval(&rv) += adj.d;
-            if ((word0(&rv) & Exp_mask) >=
+            set_dval(&rv0, get_dval(&rv));
+            set_word0(&rv, get_word0(&rv) - P*Exp_msk1);
+            adj = aadj1 * ulp(&rv);
+            set_dval(&rv, get_dval(&rv) + adj);
+            if ((get_word0(&rv) & Exp_mask) >=
                 Exp_msk1*(DBL_MAX_EXP+Bias-P)) {
-                if (word0(&rv0) == Big0 && word1(&rv0) == Big1) {
+                if (get_word0(&rv0) == Big0 && get_word1(&rv0) == Big1) {
                     Bfree(bb);
                     Bfree(bd);
                     Bfree(bs);
@@ -2101,12 +2130,12 @@ _Py_dg_strtod(const char *s00, char **se)
                     Bfree(delta);
                     goto ovfl;
                 }
-                word0(&rv) = Big0;
-                word1(&rv) = Big1;
+                set_word0(&rv, Big0);
+                set_word1(&rv, Big1);
                 goto cont;
             }
             else
-                word0(&rv) += P*Exp_msk1;
+                set_word0(&rv, get_word0(&rv) + P*Exp_msk1);
         }
         else {
             if (bc.scale && y <= 2*P*Exp_msk1) {
@@ -2116,14 +2145,14 @@ _Py_dg_strtod(const char *s00, char **se)
                     aadj = z;
                     aadj1 = dsign ? aadj : -aadj;
                 }
-                dval(&aadj2) = aadj1;
-                word0(&aadj2) += (2*P+1)*Exp_msk1 - y;
-                aadj1 = dval(&aadj2);
+                set_dval(&aadj2, aadj1);
+                set_word0(&aadj2, get_word0(&aadj2) + ((2*P+1)*Exp_msk1 - y));
+                aadj1 = get_dval(&aadj2);
             }
-            adj.d = aadj1 * ulp(&rv);
-            dval(&rv) += adj.d;
+            adj = aadj1 * ulp(&rv);
+            set_dval(&rv, get_dval(&rv) + adj);
         }
-        z = word0(&rv) & Exp_mask;
+        z = get_word0(&rv) & Exp_mask;
         if (bc.nd == nd) {
             if (!bc.scale)
                 if (y == z) {
@@ -2131,7 +2160,7 @@ _Py_dg_strtod(const char *s00, char **se)
                     L = (Long)aadj;
                     aadj -= L;
                     /* The tolerances below are conservative. */
-                    if (dsign || word1(&rv) || word0(&rv) & Bndry_mask) {
+                    if (dsign || get_word1(&rv) || get_word0(&rv) & Bndry_mask) {
                         if (aadj < .4999999 || aadj > .5000001)
                             break;
                     }
@@ -2157,13 +2186,13 @@ _Py_dg_strtod(const char *s00, char **se)
     }
 
     if (bc.scale) {
-        word0(&rv0) = Exp_1 - 2*P*Exp_msk1;
-        word1(&rv0) = 0;
-        dval(&rv) *= dval(&rv0);
+        set_word0(&rv0, Exp_1 - 2*P*Exp_msk1);
+        set_word1(&rv0, 0);
+        set_dval(&rv, get_dval(&rv) * get_dval(&rv0));
     }
 
   ret:
-    return sign ? -dval(&rv) : dval(&rv);
+    return sign ? -get_dval(&rv) : get_dval(&rv);
 
   parse_error:
     return 0.0;
@@ -2178,9 +2207,9 @@ _Py_dg_strtod(const char *s00, char **se)
   ovfl:
     errno = ERANGE;
     /* Can't trust HUGE_VAL */
-    word0(&rv) = Exp_mask;
-    word1(&rv) = 0;
-    return sign ? -dval(&rv) : dval(&rv);
+    set_word0(&rv, Exp_mask);
+    set_word1(&rv, 0);
+    return sign ? -get_dval(&rv) : get_dval(&rv);
 
 }
 
@@ -2322,25 +2351,25 @@ _Py_dg_dtoa(double dd, int mode, int ndigits,
     mlo = mhi = S = 0;
     s0 = 0;
 
-    u.d = dd;
-    if (word0(&u) & Sign_bit) {
+    set_dval(&u, dd);
+    if (get_word0(&u) & Sign_bit) {
         /* set sign for everything, including 0's and NaNs */
         *sign = 1;
-        word0(&u) &= ~Sign_bit; /* clear sign bit */
+        set_word0(&u, get_word0(&u) & ~Sign_bit); /* clear sign bit */
     }
     else
         *sign = 0;
 
     /* quick return for Infinities, NaNs and zeros */
-    if ((word0(&u) & Exp_mask) == Exp_mask)
+    if ((get_word0(&u) & Exp_mask) == Exp_mask)
     {
         /* Infinity or NaN */
         *decpt = 9999;
-        if (!word1(&u) && !(word0(&u) & 0xfffff))
+        if (!get_word1(&u) && !(get_word0(&u) & 0xfffff))
             return nrv_alloc("Infinity", rve, 8);
         return nrv_alloc("NaN", rve, 3);
     }
-    if (!dval(&u)) {
+    if (!get_dval(&u)) {
         *decpt = 1;
         return nrv_alloc("0", rve, 1);
     }
@@ -2350,10 +2379,10 @@ _Py_dg_dtoa(double dd, int mode, int ndigits,
     b = d2b(&u, &be, &bbits);
     if (b == NULL)
         goto failed_malloc;
-    if ((i = (int)(word0(&u) >> Exp_shift1 & (Exp_mask>>Exp_shift1)))) {
-        dval(&d2) = dval(&u);
-        word0(&d2) &= Frac_mask1;
-        word0(&d2) |= Exp_11;
+    if ((i = (int)(get_word0(&u) >> Exp_shift1 & (Exp_mask>>Exp_shift1)))) {
+        set_dval(&d2, get_dval(&u));
+        set_word0(&d2, get_word0(&d2) & Frac_mask1);
+        set_word0(&d2, get_word0(&d2) | Exp_11);
 
         /* log(x)       ~=~ log(1.5) + (x-1.5)/1.5
          * log10(x)      =  log(x) / log(10)
@@ -2384,21 +2413,21 @@ _Py_dg_dtoa(double dd, int mode, int ndigits,
         /* d is denormalized */
 
         i = bbits + be + (Bias + (P-1) - 1);
-        x = i > 32  ? word0(&u) << (64 - i) | word1(&u) >> (i - 32)
-            : word1(&u) << (32 - i);
-        dval(&d2) = x;
-        word0(&d2) -= 31*Exp_msk1; /* adjust exponent */
+        x = i > 32  ? get_word0(&u) << (64 - i) | get_word1(&u) >> (i - 32)
+            : get_word1(&u) << (32 - i);
+        set_dval(&d2, x);
+        set_word0(&d2, get_word0(&d2) - 31*Exp_msk1); /* adjust exponent */
         i -= (Bias + (P-1) - 1) + 1;
         denorm = 1;
     }
-    ds = (dval(&d2)-1.5)*0.289529654602168 + 0.1760912590558 +
+    ds = (get_dval(&d2)-1.5)*0.289529654602168 + 0.1760912590558 +
         i*0.301029995663981;
     k = (int)ds;
     if (ds < 0. && ds != k)
         k--;    /* want k = floor(ds) */
     k_check = 1;
     if (k >= 0 && k <= Ten_pmax) {
-        if (dval(&u) < tens[k])
+        if (get_dval(&u) < tens[k])
             k--;
         k_check = 0;
     }
@@ -2468,7 +2497,7 @@ _Py_dg_dtoa(double dd, int mode, int ndigits,
         /* Try to get by with floating-point arithmetic. */
 
         i = 0;
-        dval(&d2) = dval(&u);
+        set_dval(&d2, get_dval(&u));
         k0 = k;
         ilim0 = ilim;
         ieps = 2; /* conservative */
@@ -2478,7 +2507,7 @@ _Py_dg_dtoa(double dd, int mode, int ndigits,
             if (j & Bletch) {
                 /* prevent overflows */
                 j &= Bletch - 1;
-                dval(&u) /= bigtens[n_bigtens-1];
+                set_dval(&u, get_dval(&u) / bigtens[n_bigtens-1]);
                 ieps++;
             }
             for(; j; j >>= 1, i++)
@@ -2486,32 +2515,32 @@ _Py_dg_dtoa(double dd, int mode, int ndigits,
                     ieps++;
                     ds *= bigtens[i];
                 }
-            dval(&u) /= ds;
+            set_dval(&u, get_dval(&u) / ds);
         }
         else if ((j1 = -k)) {
-            dval(&u) *= tens[j1 & 0xf];
+            set_dval(&u, get_dval(&u) * tens[j1 & 0xf]);
             for(j = j1 >> 4; j; j >>= 1, i++)
                 if (j & 1) {
                     ieps++;
-                    dval(&u) *= bigtens[i];
+                    set_dval(&u, get_dval(&u) * bigtens[i]);
                 }
         }
-        if (k_check && dval(&u) < 1. && ilim > 0) {
+        if (k_check && get_dval(&u) < 1. && ilim > 0) {
             if (ilim1 <= 0)
                 goto fast_failed;
             ilim = ilim1;
             k--;
-            dval(&u) *= 10.;
+            set_dval(&u, get_dval(&u) * 10.);
             ieps++;
         }
-        dval(&eps) = ieps*dval(&u) + 7.;
-        word0(&eps) -= (P-1)*Exp_msk1;
+        set_dval(&eps, ieps*get_dval(&u) + 7.);
+        set_word0(&eps, get_word0(&eps) - (P-1)*Exp_msk1);
         if (ilim == 0) {
             S = mhi = 0;
-            dval(&u) -= 5.;
-            if (dval(&u) > dval(&eps))
+            set_dval(&u, get_dval(&u) - 5.);
+            if (get_dval(&u) > get_dval(&eps))
                 goto one_digit;
-            if (dval(&u) < -dval(&eps))
+            if (get_dval(&u) < -get_dval(&eps))
                 goto no_digits;
             goto fast_failed;
         }
@@ -2519,33 +2548,33 @@ _Py_dg_dtoa(double dd, int mode, int ndigits,
             /* Use Steele & White method of only
              * generating digits needed.
              */
-            dval(&eps) = 0.5/tens[ilim-1] - dval(&eps);
+            set_dval(&eps, 0.5/tens[ilim-1] - get_dval(&eps));
             for(i = 0;;) {
-                L = (Long)dval(&u);
-                dval(&u) -= L;
+                L = (Long)get_dval(&u);
+                set_dval(&u, get_dval(&u) - L);
                 *s++ = '0' + (int)L;
-                if (dval(&u) < dval(&eps))
+                if (get_dval(&u) < get_dval(&eps))
                     goto ret1;
-                if (1. - dval(&u) < dval(&eps))
+                if (1. - get_dval(&u) < get_dval(&eps))
                     goto bump_up;
                 if (++i >= ilim)
                     break;
-                dval(&eps) *= 10.;
-                dval(&u) *= 10.;
+                set_dval(&eps, get_dval(&eps) * 10.);
+                set_dval(&u, get_dval(&u) * 10.);
             }
         }
         else {
             /* Generate ilim digits, then fix them up. */
-            dval(&eps) *= tens[ilim-1];
-            for(i = 1;; i++, dval(&u) *= 10.) {
-                L = (Long)(dval(&u));
-                if (!(dval(&u) -= L))
+            set_dval(&eps, get_dval(&eps) * tens[ilim-1]);
+            for(i = 1;; i++, set_dval(&u, get_dval(&u) * 10.)) {
+                L = (Long)(get_dval(&u));
+                if (!(set_dval(&u, get_dval(&u) - L)))
                     ilim = i;
                 *s++ = '0' + (int)L;
                 if (i == ilim) {
-                    if (dval(&u) > 0.5 + dval(&eps))
+                    if (get_dval(&u) > 0.5 + get_dval(&eps))
                         goto bump_up;
-                    else if (dval(&u) < 0.5 - dval(&eps)) {
+                    else if (get_dval(&u) < 0.5 - get_dval(&eps)) {
                         while(*--s == '0');
                         s++;
                         goto ret1;
@@ -2556,7 +2585,7 @@ _Py_dg_dtoa(double dd, int mode, int ndigits,
         }
       fast_failed:
         s = s0;
-        dval(&u) = dval(&d2);
+        set_dval(&u, get_dval(&d2));
         k = k0;
         ilim = ilim0;
     }
@@ -2568,20 +2597,20 @@ _Py_dg_dtoa(double dd, int mode, int ndigits,
         ds = tens[k];
         if (ndigits < 0 && ilim <= 0) {
             S = mhi = 0;
-            if (ilim < 0 || dval(&u) <= 5*ds)
+            if (ilim < 0 || get_dval(&u) <= 5*ds)
                 goto no_digits;
             goto one_digit;
         }
-        for(i = 1;; i++, dval(&u) *= 10.) {
-            L = (Long)(dval(&u) / ds);
-            dval(&u) -= L*ds;
+        for(i = 1;; i++, set_dval(&u, get_dval(&u) * 10.)) {
+            L = (Long)(get_dval(&u) / ds);
+            set_dval(&u, get_dval(&u) - L*ds);
             *s++ = '0' + (int)L;
-            if (!dval(&u)) {
+            if (!get_dval(&u)) {
                 break;
             }
             if (i == ilim) {
-                dval(&u) += dval(&u);
-                if (dval(&u) > ds || (dval(&u) == ds && L & 1)) {
+                set_dval(&u, get_dval(&u) + get_dval(&u));
+                if (get_dval(&u) > ds || (get_dval(&u) == ds && L & 1)) {
                   bump_up:
                     while(*--s == '9')
                         if (s == s0) {
@@ -2653,8 +2682,8 @@ _Py_dg_dtoa(double dd, int mode, int ndigits,
     spec_case = 0;
     if ((mode < 2 || leftright)
         ) {
-        if (!word1(&u) && !(word0(&u) & Bndry_mask)
-            && word0(&u) & (Exp_mask & ~Exp_msk1)
+        if (!get_word1(&u) && !(get_word0(&u) & Bndry_mask)
+            && get_word0(&u) & (Exp_mask & ~Exp_msk1)
             ) {
             /* The special case */
             b2 += Log2P;
@@ -2751,7 +2780,7 @@ _Py_dg_dtoa(double dd, int mode, int ndigits,
                 goto failed_malloc;
             j1 = delta->sign ? 1 : cmp(b, delta);
             Bfree(delta);
-            if (j1 == 0 && mode != 1 && !(word1(&u) & 1)
+            if (j1 == 0 && mode != 1 && !(get_word1(&u) & 1)
                 ) {
                 if (dig == '9')
                     goto round_9_up;
@@ -2761,7 +2790,7 @@ _Py_dg_dtoa(double dd, int mode, int ndigits,
                 goto ret;
             }
             if (j < 0 || (j == 0 && mode != 1
-                          && !(word1(&u) & 1)
+                          && !(get_word1(&u) & 1)
                     )) {
                 if (!b->x[0] && b->wds <= 1) {
                     goto accept_dig;
